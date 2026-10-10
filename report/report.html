@@ -1,0 +1,943 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpeedWatch report</title>
+<style>
+  /* Everything is local on purpose: this page has to render during an outage,
+     so there are no web fonts, no CDN scripts and no network calls at all. */
+  :root {
+    color-scheme: light;
+    --bg:        #eef1f4;
+    --surface:   #ffffff;
+    --surface-2: #f6f8f9;
+    --ink:       #16212b;
+    --ink-2:     #33434f;
+    --muted:     #5f7080;
+    --line:      #d3dce3;
+    --line-soft: #e4eaef;
+    --grid:      #e8edf1;
+    --accent:    #0d6a6a;
+    --ok:        #2c7a4d;
+    --warn:      #9c6410;
+    --bad:       #a83228;
+    --ok-bg:     #e4f1e9;
+    --warn-bg:   #f8eeda;
+    --bad-bg:    #f8e5e2;
+    --grade-red:    #a83228;
+    --grade-yellow: #9c6410;
+    --grade-white:  #16212b;   /* neutral: the page's own ink */
+    --grade-green:  #2c7a4d;
+    /* Bar fills. Checked at >= 3:1 against the surface in both themes. In the
+       light theme the "white" band is slate: a white bar on a white card would
+       vanish. */
+    --fill-red:     #c4453a;
+    --fill-yellow:  #b07a12;
+    --fill-white:   #7d8b99;
+    --fill-green:   #2f8a55;
+    --series-1:  #2a78d6;   /* neutral bars, and "idle" in latency */
+    --series-2:  #eb6834;   /* upload */
+    --shadow:    0 1px 2px rgba(22,33,43,.06), 0 8px 24px -12px rgba(22,33,43,.18);
+    --f-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --f-mono: "Cascadia Mono", "Consolas", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg:        #0e151b;
+      --surface:   #161f27;
+      --surface-2: #1c2731;
+      --ink:       #e7eef4;
+      --ink-2:     #c2d0da;
+      --muted:     #8ea0ae;
+      --line:      #2a3844;
+      --line-soft: #223039;
+      --grid:      #223039;
+      --accent:    #4fb0ac;
+      --ok:        #63b483;
+      --warn:      #d2a054;
+      --bad:       #e08a80;
+      --ok-bg:     #172a20;
+      --warn-bg:   #2c2416;
+      --bad-bg:    #2e1a18;
+      --grade-red:    #e08a80;
+      --grade-yellow: #d2a054;
+      --grade-white:  #e7eef4;   /* neutral: the page's own ink */
+      --grade-green:  #63b483;
+      --fill-red:     #e08a80;
+      --fill-yellow:  #d2a054;
+      --fill-white:   #e7eef4;
+      --fill-green:   #63b483;
+      --series-1:  #3987e5;
+      --series-2:  #d95926;
+      --shadow:    0 1px 2px rgba(0,0,0,.4), 0 10px 28px -14px rgba(0,0,0,.7);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--f-sans);
+    font-size: 15.5px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 980px;
+    margin-inline: auto;
+    padding-inline: 20px;
+    padding-block: 36px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 26px;
+  }
+
+  /* No text-transform here: uppercasing "Mb/s" yields "MB/S" and erases the
+     megabit / megabyte distinction this report exists to keep straight. */
+  .eyebrow {
+    font-size: 12px; font-weight: 600; letter-spacing: .06em;
+    color: var(--muted); margin: 0 0 8px;
+  }
+  h1 { font-size: clamp(26px,5vw,34px); line-height:1.15; margin:0; font-weight:650; letter-spacing:-.02em; }
+  h2 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing:-.01em; }
+  p  { margin: 0; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 22px;
+    box-shadow: var(--shadow);
+  }
+  .card-head { display:flex; align-items:baseline; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:16px; }
+  .card-head p { font-size: 13px; color: var(--muted); }
+
+  /* ---- hero stats ---- */
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:22px; }
+  .stat .label { display:block; font-size:10.5px; font-weight:600; letter-spacing:.1em;
+                 text-transform:uppercase; color:var(--muted); margin-bottom:4px; }
+  .stat .value { display:block; font-family:var(--f-mono); font-size:30px; font-weight:600;
+                 line-height:1.1; letter-spacing:-.02em; font-variant-numeric:tabular-nums; }
+  .stat .note  { display:block; font-size:12.5px; color:var(--muted); margin-top:3px; }
+  .v-bad .value{ color:var(--bad); } .v-ok .value{ color:var(--ok); } .v-warn .value{ color:var(--warn); }
+
+  .planbar { margin-top:18px; }
+  .planbar .track { height:7px; background:var(--line-soft); border-radius:4px; overflow:hidden; }
+  .planbar .fill  { height:7px; border-radius:4px; background:var(--bad); min-width:3px; }
+  .planbar .cap   { font-size:12.5px; color:var(--muted); margin-top:7px; }
+
+  /* ---- charts ---- */
+  .chartwrap { position:relative; }
+  .chartwrap svg { display:block; width:100%; height:auto; }
+  .legend { display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--muted); margin-bottom:10px; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; }
+  .legend i { width:14px; height:3px; border-radius:2px; display:inline-block; }
+  .legend i.sq { width:11px; height:11px; border-radius:2px; }
+  .legend .x { font-family:var(--f-mono); font-size:13px; color:var(--muted); width:11px; text-align:center; }
+  .hint { font-size:12.5px; color:var(--muted); margin:0 0 10px; }
+  .chartwrap svg text { font-family: var(--f-sans); }
+
+  .tip {
+    position:absolute; pointer-events:none; opacity:0; transition:opacity .1s;
+    background:var(--surface-2); border:1px solid var(--line); border-radius:4px;
+    padding:9px 11px; font-size:12.5px; box-shadow:var(--shadow); min-width:140px; z-index:5;
+  }
+  .tip b { display:block; font-size:11.5px; color:var(--muted); font-weight:600; margin-bottom:5px; }
+  .tip .row { display:flex; align-items:center; gap:8px; justify-content:space-between; }
+  .tip .row em { font-style:normal; display:inline-flex; align-items:center; gap:7px; color:var(--ink-2); }
+  .tip .row i { width:10px; height:10px; border-radius:2px; display:inline-block; }
+  .tip .sub { display:block; color:var(--muted); font-size:11.5px; margin-top:5px; }
+  .tip .row span { font-family:var(--f-mono); font-variant-numeric:tabular-nums; color:var(--ink); }
+
+  /* ---- table ---- */
+  .t-scroll { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; min-width:720px; }
+  th { text-align:left; font-size:10.5px; font-weight:600; letter-spacing:.09em; text-transform:uppercase;
+       color:var(--muted); padding:0 12px 9px 0; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td { padding:9px 12px 9px 0; border-bottom:1px solid var(--line-soft); color:var(--ink-2); vertical-align:middle; }
+  tbody tr:last-child td { border-bottom:0; }
+  th:last-child, td:last-child { padding-right:0; }
+  .num { font-family:var(--f-mono); font-variant-numeric:tabular-nums; color:var(--ink); white-space:nowrap; }
+  .chip { display:inline-block; font-size:10.5px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+          padding:2px 7px; border-radius:2px; }
+  .chip-ok{background:var(--ok-bg);color:var(--ok);}
+  .chip-warn{background:var(--warn-bg);color:var(--warn);}
+  .chip-bad{background:var(--bad-bg);color:var(--bad);}
+  a { color:var(--accent); text-decoration:none; border-bottom:1px solid transparent; }
+  a:hover { border-bottom-color:currentColor; }
+  a:focus-visible, button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  .shot { display:block; max-width:100%; height:auto; border:1px solid var(--line); border-radius:4px; }
+
+  .empty { text-align:center; padding:52px 20px; color:var(--muted); }
+  .empty strong { display:block; color:var(--ink); font-size:18px; margin-bottom:8px; font-weight:600; }
+
+  footer { font-size:12.5px; color:var(--muted); max-width:70ch; }
+
+  /* ---- range bar ---- */
+  .range { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; }
+  .range .lbl { font-size:12px; font-weight:600; letter-spacing:.06em; color:var(--muted); }
+  .seg { display:inline-flex; flex-wrap:wrap; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:var(--surface); }
+  .seg button { font:inherit; font-size:13px; line-height:1; padding:8px 13px; border:0; background:transparent;
+                color:var(--ink-2); cursor:pointer; }
+  .seg button + button { border-left:1px solid var(--line); }
+  .seg button:hover { background:var(--surface-2); }
+  .seg button[aria-pressed="true"] { background:var(--ink); color:var(--surface); }
+  .custom { display:inline-flex; align-items:center; gap:7px; font-size:13px; color:var(--muted); }
+  .custom input { width:68px; font:inherit; font-size:13px; padding:6px 8px; border:1px solid var(--line); border-radius:6px;
+                  background:var(--surface); color:var(--ink); font-variant-numeric:tabular-nums; }
+  .custom input[aria-invalid="true"] { border-color:var(--bad); }
+  .rnote { font-size:12.5px; color:var(--bad); }
+  input:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  /* Band colours are declared LAST on purpose: .num also sets a colour, and at
+     equal specificity the later rule wins. Keep this block at the end. */
+  .g-red   { color: var(--grade-red); }
+  .g-yellow{ color: var(--grade-yellow); }
+  .g-white { color: var(--grade-white); }
+  .g-green { color: var(--grade-green); }
+
+  @media (max-width:560px){
+    .stat .value{ font-size:25px; }
+    .card{ padding:18px; }
+  }
+  @media (prefers-reduced-motion: reduce){ .tip{ transition:none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow" id="eyebrow">SpeedWatch</p>
+    <h1>Connection report</h1>
+  </header>
+
+  <nav class="range" id="range" aria-label="Date range"></nav>
+
+  <div id="content"></div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script src="../data/settings.js"></script>
+<script src="../data/history.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var DATA = (window.SPEEDWATCH && Array.isArray(window.SPEEDWATCH.runs)) ? window.SPEEDWATCH : null;
+  var SET  = window.SPEEDWATCH_SETTINGS || null;
+  var root = document.getElementById('content');
+  var foot = document.getElementById('foot');
+
+  function num(v) {
+    var n = Number(v);
+    return (v === null || v === undefined || v === '' || !isFinite(n) || n <= 0) ? null : n;
+  }
+  function validBands(b) {
+    if (!Array.isArray(b) || b.length !== 3) return null;
+    var n = b.map(Number);
+    return (n[0] > 0 && n[0] < n[1] && n[1] < n[2] && n[2] <= 100) ? n : null;
+  }
+
+  // The plan comes from data/settings.js, which the panel rewrites on every
+  // save - so a changed plan shows here at once. Older installs only had it
+  // inside history.js. When settings.js exists its value wins even if empty:
+  // a plan the person cleared must not be resurrected from an old data file.
+  var PLAN    = (SET && ('planMbps' in SET)) ? num(SET.planMbps) : num(DATA && DATA.planMbps);
+  var PLAN_UP = SET ? num(SET.planUpMbps) : null;
+  var BANDS   = validBands(SET && SET.bands) || [25, 50, 75];
+  var TIMES   = (SET && Array.isArray(SET.times)) ? SET.times : [];
+
+  var runs = DATA ? DATA.runs.slice() : [];
+  var good = runs.filter(function (r) { return r && r.ok && r.downMbps !== null && r.downMbps !== undefined; });
+
+  if (!runs.length) {
+    root.innerHTML =
+      '<div class="card"><div class="empty"><strong>No readings yet</strong>' +
+      'Open the SpeedWatch panel and press &ldquo;Run now&rdquo; to take the first one, ' +
+      'or wait for the next scheduled test.</div></div>';
+    return;
+  }
+
+  // ------------------------------------------------------------- helpers
+  function fmt(v, d) {
+    if (v === null || v === undefined || isNaN(v)) return '—';
+    return Number(v).toFixed(d === undefined ? 1 : d);
+  }
+  function plain(v) {            // plan figures: 1000, never "1.000" or "1000.0"
+    return v === null ? '' : (Math.round(v) === v ? String(v) : String(Math.round(v * 100) / 100));
+  }
+  // Timestamps carry seven fractional digits ("...:55.2774590-03:00"). Chrome
+  // accepts that; Firefox and Safari return Invalid Date. Trim to milliseconds.
+  function parseTs(iso) { return new Date(String(iso).replace(/(\.\d{3})\d+/, '$1')); }
+  function dshort(iso) {
+    var dt = parseTs(iso);
+    if (isNaN(dt)) return String(iso).slice(0, 10);
+    return dt.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  }
+  function dlong(iso) {
+    var dt = parseTs(iso);
+    if (isNaN(dt)) return String(iso);
+    return dt.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+  function dayKey(iso) { var d = parseTs(iso); return isNaN(d) ? String(iso).slice(0, 10) : d.toDateString(); }
+  function dday(iso) {
+    var dt = parseTs(iso);
+    if (isNaN(dt)) return String(iso).slice(0, 10);
+    return dt.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  }
+  function esc(s) { return String(s === null || s === undefined ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  // Share of plan -> band. Mirrors Get-SwGrade in scripts/schedule.ps1; both
+  // read their thresholds from settings.json ("bands").
+  function grade(pct) {
+    if (pct < BANDS[0]) return 'red';
+    if (pct < BANDS[1]) return 'yellow';
+    if (pct < BANDS[2]) return 'white';
+    return 'green';
+  }
+  // A reading is graded against the plan recorded with it; older readings
+  // (or ones taken with no plan set) use the current plan. Mirrors
+  // Get-ReadingPlan in panel.ps1.
+  function planOf(r, key, current) {
+    var n = r ? num(r[key]) : null;
+    return (n !== null && n > 0) ? n : current;
+  }
+  function downPlan(r) { return planOf(r, 'planMbps', PLAN); }
+  function upPlan(r)   { return planOf(r, 'planUpMbps', PLAN_UP); }
+
+  function gradeOf(mbps, plan) {
+    if (plan === null || mbps === null || mbps === undefined || isNaN(mbps)) return null;
+    return grade(mbps / plan * 100);
+  }
+  function gcls(g) { return g ? ' g-' + g : ''; }
+  var BAND_NAME = { red: 'red', yellow: 'yellow', white: 'white', green: 'green' };
+  function bandRange(g) {
+    if (g === 'red')    return 'under ' + BANDS[0] + '%';
+    if (g === 'yellow') return BANDS[0] + '–' + BANDS[1] + '%';
+    if (g === 'white')  return BANDS[1] + '–' + BANDS[2] + '%';
+    return BANDS[2] + '% and over';
+  }
+
+  function niceMax(v) {
+    if (!(v > 0)) return 10;
+    var mag = Math.pow(10, Math.floor(Math.log10(v)));
+    var n = v / mag;
+    var step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+    return step * mag;
+  }
+
+  // ------------------------------------------------------------- range
+  // How far back to look. The last choice is remembered in this browser; the
+  // first time, reportDays from settings.json is used. A #days=N in the address
+  // wins over both, so a particular view can be bookmarked.
+  var DAY_MS    = 86400000;
+  var PRESETS   = [7, 14, 30, 90, 0];                     // 0 = everything
+  var STORE_KEY = 'speedwatch.reportDays';
+
+  function validDays(v) {
+    if (v === null || v === undefined) return null;
+    var t = String(v).trim().toLowerCase();
+    if (t === 'all' || t === '0') return 0;
+    if (!/^\d{1,4}$/.test(t)) return null;
+    var n = Number(t);
+    return (n >= 1 && n <= 3650) ? n : null;
+  }
+  function hashDays() {
+    var m = /(?:^#|&)days=([^&]+)/.exec(location.hash || '');
+    return m ? validDays(decodeURIComponent(m[1])) : null;
+  }
+  function storedDays() { try { return validDays(localStorage.getItem(STORE_KEY)); } catch (e) { return null; } }
+  function firstOf() {
+    for (var i = 0; i < arguments.length; i++) { if (arguments[i] !== null && arguments[i] !== undefined) return arguments[i]; }
+    return 30;
+  }
+  var days = firstOf(hashDays(), storedDays(), validDays(SET && SET.reportDays), 30);
+
+  function rangeText(d) { return d === 0 ? 'all time' : d === 1 ? 'today' : 'the last ' + d + ' days'; }
+  // Calendar days: "7 days" is today plus the six before it, from midnight,
+  // so the first day on the chart is a whole day rather than a sliver.
+  function rangeStart(d) {
+    var t = new Date(); t.setHours(0, 0, 0, 0); t.setDate(t.getDate() - (d - 1)); return t.getTime();
+  }
+  function inRange(list, d) {
+    if (d === 0) return list.slice();
+    var cut = rangeStart(d);
+    return list.filter(function (r) { var t = parseTs(r.ts).getTime(); return isNaN(t) || t >= cut; });
+  }
+  function isGood(r) { return r && r.ok && r.downMbps !== null && r.downMbps !== undefined; }
+
+  var last = good.length ? good[good.length - 1] : null;   // newest reading, whatever the range
+
+  // ------------------------------------------------------------- bar charts
+  // One bar per test, because each is a separate measurement: a line between
+  // them would invent the values in between. When a range holds more tests
+  // than can be drawn legibly, bars switch to one per day (see below).
+  var RENDERERS = {};                                      // wrapId -> render(); rebuilt on every range change
+  var resizeTimer = null;
+  window.addEventListener('resize', function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      Object.keys(RENDERERS).forEach(function (k) { RENDERERS[k](); });
+    }, 150);
+  });
+
+  function median(a) {
+    if (!a.length) return null;
+    var s = a.slice().sort(function (x, y) { return x - y; });
+    var m = s.length >> 1;
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+  function isNum(v) { return v !== null && v !== undefined && !isNaN(v); }
+
+  // One item per calendar day. Values are the day's median - the typical
+  // reading, not dragged about by a single outlier - and each item keeps its
+  // runs so the tooltip can show the lowest and highest of the day.
+  function aggregateByDay(rows) {
+    var groups = [], idx = {};
+    rows.forEach(function (r) {
+      var k = dayKey(r.ts);
+      if (!(k in idx)) { idx[k] = groups.length; groups.push({ runs: [] }); }
+      groups[idx[k]].runs.push(r);
+    });
+    return groups.map(function (g) {
+      var ok = g.runs.filter(function (r) { return r.ok; });
+      function med(f) { return median(ok.map(function (r) { return r[f]; }).filter(isNum)); }
+      var lastOk = ok.length ? ok[ok.length - 1] : null;
+      return {
+        ts: g.runs[0].ts, day: true, ok: ok.length > 0,
+        n: g.runs.length, nOk: ok.length, nFail: g.runs.length - ok.length, runs: g.runs,
+        downMbps: med('downMbps'), upMbps: med('upMbps'), pingMs: med('pingMs'), loadedDownMs: med('loadedDownMs'),
+        planMbps: lastOk ? lastOk.planMbps : null, planUpMbps: lastOk ? lastOk.planUpMbps : null
+      };
+    });
+  }
+
+  function barPath(x, y, w, base, r) {
+    var h = base - y;
+    if (h <= 0) return '';
+    r = Math.min(r, w / 2, h);
+    return 'M' + x + ',' + base + 'V' + (y + r) +
+           'Q' + x + ',' + y + ' ' + (x + r) + ',' + y +
+           'H' + (x + w - r) +
+           'Q' + (x + w) + ',' + y + ' ' + (x + w) + ',' + (y + r) +
+           'V' + base + 'Z';
+  }
+
+  /*
+    opts.series : [{ label, get(row) -> number|null, fill(row, value) -> css colour,
+                     band(row) -> band name, planFor(row) -> plan for that reading }]
+    opts.plan   : number|null - when set, gridlines sit at the band thresholds of this plan
+    opts.unit, opts.decimals, opts.noteUnit, opts.noteExtra
+  */
+  function drawBars(wrapId, tipId, rowsIn, opts) {
+    var wrap = document.getElementById(wrapId);
+    var tip  = document.getElementById(tipId);
+    var note = document.getElementById(wrapId + '-note');
+    if (!wrap) return;
+    var series = opts.series;
+
+    function render() {
+      var W = Math.max(320, wrap.clientWidth || 640);
+      var H = 250;
+      var padL = 48, padR = opts.plan ? 74 : 16, padT = 16, padB = 32;
+      var iw = W - padL - padR, ih = H - padT - padB;
+      var base = padT + ih;
+
+      // Below about 6px a bar stops reading as a bar, so past that many tests
+      // the chart draws one bar per day instead. Decided per render, so it
+      // adapts to the window width as well as to the range.
+      var capacity = Math.max(10, Math.floor(iw / 6));
+      var byDay = rowsIn.length > capacity;
+      var data = byDay ? aggregateByDay(rowsIn) : rowsIn;
+      var n = data.length;
+
+      if (note) {
+        note.textContent = byDay
+          ? opts.noteUnit + ' · one bar per day, the middle of that day’s tests · ' +
+            n + ' day' + (n === 1 ? '' : 's') + ', ' + rowsIn.length + ' tests'
+          : opts.noteUnit + ' at each test · ' + n + ' test' + (n === 1 ? '' : 's') +
+            (opts.noteExtra ? ' · ' + opts.noteExtra : '');
+      }
+
+      var vals = [];
+      data.forEach(function (r) { series.forEach(function (s) {
+        var v = r.ok ? s.get(r) : null; if (isNum(v)) vals.push(v); }); });
+      var vmax = vals.length ? Math.max.apply(null, vals) : 0;
+
+      var ticks, top;
+      if (opts.plan) {
+        ticks = [0, BANDS[0], BANDS[1], BANDS[2], 100].map(function (p) { return { v: opts.plan * p / 100, p: p }; });
+        top = Math.max(opts.plan, vmax) * 1.06;
+      } else {
+        top = niceMax(Math.max(vmax, 1) * 1.1);
+        ticks = [0, 1, 2, 3, 4].map(function (i) { return { v: top * i / 4, p: null }; });
+      }
+      function Y(v) { return padT + ih - (v / top) * ih; }
+      var slot = iw / Math.max(n, 1);
+      function cx(i) { return padL + slot * (i + 0.5); }
+
+      var k = series.length;
+      var gap = 2;
+      var groupW = Math.min(24 * k + gap * (k - 1), Math.max(2, slot - 3));
+      var bw = Math.max(1.5, (groupW - gap * (k - 1)) / k);
+
+      var out = [];
+      out.push('<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="' +
+               esc(opts.aria + (byDay ? ', one bar per day' : ', one bar per test')) + '">');
+
+      // day separators (per-test mode only): faint, so a day's tests read as a group
+      if (!byDay) {
+        for (var i = 1; i < n; i++) {
+          if (dayKey(data[i].ts) !== dayKey(data[i - 1].ts)) {
+            var sx = padL + slot * i;
+            out.push('<line x1="' + sx + '" y1="' + padT + '" x2="' + sx + '" y2="' + base +
+                     '" style="stroke:var(--line-soft)" stroke-width="1"/>');
+          }
+        }
+      }
+
+      // gridlines = band thresholds when a plan is set
+      ticks.forEach(function (t) {
+        var y = Y(t.v);
+        var isPlan = opts.plan && t.p === 100;
+        out.push('<line x1="' + padL + '" y1="' + y + '" x2="' + (padL + iw) + '" y2="' + y +
+                 '" style="stroke:var(' + (isPlan ? '--muted' : '--grid') + ')" stroke-width="1"' +
+                 (isPlan ? ' opacity="0.7"' : '') + '/>');
+        out.push('<text x="' + (padL - 8) + '" y="' + (y + 4) + '" text-anchor="end" font-size="11" style="fill:var(--muted)">' +
+                 (t.v >= 100 || t.v === 0 ? Math.round(t.v) : t.v.toFixed(t.v < 10 ? 1 : 0)) + '</text>');
+        if (opts.plan && t.p) {
+          out.push('<text x="' + (padL + iw + 8) + '" y="' + (y + 4) + '" font-size="11" style="fill:var(' +
+                   (isPlan ? '--ink-2' : '--muted') + ')">' + (isPlan ? 'plan' : t.p + '%') + '</text>');
+        }
+      });
+
+      // hover column highlight sits behind the bars
+      out.push('<rect id="' + wrapId + '-hl" x="0" y="' + padT + '" width="' + slot + '" height="' + ih +
+               '" style="fill:var(--line-soft)" opacity="0"/>');
+
+      // bars; a test (or a whole day) that failed is an x on the baseline
+      data.forEach(function (r, i) {
+        var left = cx(i) - groupW / 2;
+        if (!r.ok) {
+          var fx = cx(i), fy = base - 7, d = 3.5;
+          out.push('<path class="fail" d="M' + (fx - d) + ',' + (fy - d) + 'L' + (fx + d) + ',' + (fy + d) +
+                   'M' + (fx + d) + ',' + (fy - d) + 'L' + (fx - d) + ',' + (fy + d) +
+                   '" style="stroke:var(--muted)" stroke-width="1.5" stroke-linecap="round" fill="none"/>');
+          return;
+        }
+        series.forEach(function (s, j) {
+          var v = s.get(r);
+          if (!isNum(v)) return;
+          var x = left + j * (bw + gap);
+          var dPath = barPath(x, Y(v), bw, base, 4);
+          if (dPath) out.push('<path class="bar" data-g="' + (s.band ? s.band(r) || '' : '') +
+                              '" d="' + dPath + '" style="fill:' + s.fill(r, v) + '"/>');
+        });
+      });
+
+      // baseline
+      out.push('<line x1="' + padL + '" y1="' + base + '" x2="' + (padL + iw) + '" y2="' + base +
+               '" style="stroke:var(--line)" stroke-width="1"/>');
+
+      // x labels at day changes, thinned so they never collide
+      var lastX = -1e9;
+      data.forEach(function (r, i) {
+        if (i > 0 && dayKey(r.ts) === dayKey(data[i - 1].ts)) return;
+        var x = cx(i);
+        if (x - lastX < 46) return;
+        lastX = x;
+        out.push('<text x="' + x + '" y="' + (base + 19) + '" text-anchor="middle" font-size="11" style="fill:var(--muted)">' +
+                 esc(dshort(r.ts)) + '</text>');
+      });
+
+      // one direct label: the most recent value on the first series
+      for (var q = n - 1; q >= 0; q--) {
+        var lv = data[q].ok ? series[0].get(data[q]) : null;
+        if (isNum(lv)) {
+          var lx = cx(q) - groupW / 2 + bw / 2;
+          var ly = Math.max(padT + 10, Y(lv) - 6);
+          // Centred over its bar - unless that would spill past the plot into
+          // the right-hand gutter (where the band labels sit): then right-align
+          // to the bar's edge so the text stays inside the plot.
+          var nearEdge = lx + 22 > padL + iw;
+          var tx = nearEdge ? Math.min(lx + bw / 2, padL + iw) : lx;
+          // Halo in the surface colour keeps it legible over a taller neighbour.
+          out.push('<text x="' + tx + '" y="' + ly + '" text-anchor="' + (nearEdge ? 'end' : 'middle') + '" font-size="11" ' +
+                   'font-weight="600" style="fill:var(--ink);stroke:var(--surface);stroke-width:3px;' +
+                   'paint-order:stroke;stroke-linejoin:round">' + fmt(lv, opts.decimals) + '</text>');
+          break;
+        }
+      }
+
+      out.push('<rect id="' + wrapId + '-hit" x="' + padL + '" y="' + padT + '" width="' + iw + '" height="' + ih +
+               '" fill="transparent"/>');
+      out.push('</svg>');
+
+      var old = wrap.querySelector('svg');
+      if (old) old.remove();
+      wrap.insertAdjacentHTML('afterbegin', out.join(''));
+
+      var svgEl = wrap.querySelector('svg');
+      var hit = document.getElementById(wrapId + '-hit');
+      var hl  = document.getElementById(wrapId + '-hl');
+
+      function planLine(s, r, v) {
+        var p = s.planFor ? s.planFor(r) : opts.plan;
+        if (!p || !isNum(v)) return '';
+        var g = grade(v / p * 100);
+        return '<span class="sub">' + fmt(v / p * 100, 0) + '% of plan &middot; ' + g + ' (' + bandRange(g) + ')</span>';
+      }
+
+      function onMove(ev) {
+        var box = svgEl.getBoundingClientRect();
+        var scale = W / box.width;
+        var mx = (ev.clientX - box.left) * scale;
+        var i = Math.max(0, Math.min(n - 1, Math.floor((mx - padL) / slot)));
+        var r = data[i];
+        hl.setAttribute('x', padL + slot * i);
+        hl.setAttribute('opacity', '0.7');
+
+        var title, body;
+        if (r.day) {
+          title = dday(r.ts);
+          if (!r.ok) {
+            body = '<div class="row"><em>' + (r.n === 1 ? 'The test failed' : 'All ' + r.n + ' tests failed') + '</em></div>';
+          } else {
+            var okRuns = r.runs.filter(function (x) { return x.ok; });
+            body = series.map(function (s) {
+              var v = s.get(r);
+              var vs = okRuns.map(function (x) { return s.get(x); }).filter(isNum);
+              var line = '<div class="row"><em><i style="background:' + s.fill(r, v) + '"></i>' + esc(s.label) +
+                         '</em><span>' + fmt(v, opts.decimals) + ' ' + opts.unit + '</span></div>';
+              line += '<span class="sub">' + (vs.length > 1
+                        ? 'middle of ' + vs.length + ' tests &middot; lowest ' + fmt(Math.min.apply(null, vs), opts.decimals) +
+                          ', highest ' + fmt(Math.max.apply(null, vs), opts.decimals)
+                        : 'one test') + '</span>';
+              return line + planLine(s, r, v);
+            }).join('') +
+            (r.nFail ? '<span class="sub">' + r.nFail + ' of ' + r.n + ' tests failed</span>' : '');
+          }
+        } else {
+          title = dlong(r.ts);
+          if (!r.ok) {
+            body = '<div class="row"><em>Test failed</em></div>' +
+                   (r.error ? '<span class="sub">' + esc(String(r.error).slice(0, 90)) + '</span>' : '');
+          } else {
+            body = series.map(function (s) {
+              var v = s.get(r);
+              return '<div class="row"><em><i style="background:' + s.fill(r, v) + '"></i>' + esc(s.label) +
+                     '</em><span>' + fmt(v, opts.decimals) + ' ' + opts.unit + '</span></div>' + planLine(s, r, v);
+            }).join('') + (r.server ? '<span class="sub">' + esc(r.server) + '</span>' : '');
+          }
+        }
+        tip.innerHTML = '<b>' + esc(title) + '</b>' + body;
+        tip.style.opacity = '1';
+        var tw = tip.offsetWidth || 170;
+        var px = cx(i) / scale;
+        tip.style.left = Math.max(0, Math.min(box.width - tw, px - tw / 2)) + 'px';
+        tip.style.top = '4px';
+      }
+      function onLeave() { tip.style.opacity = '0'; hl.setAttribute('opacity', '0'); }
+      hit.addEventListener('mousemove', onMove);
+      hit.addEventListener('mouseleave', onLeave);
+    }
+
+    RENDERERS[wrapId] = render;
+    render();
+  }
+
+  function bandFill(planFor, neutralVar) {
+    return function (r, v) {
+      var g = gradeOf(v, planFor(r));
+      return g ? 'var(--fill-' + g + ')' : 'var(' + neutralVar + ')';
+    };
+  }
+
+  // ------------------------------------------------------------- page
+  function renderAll() {
+    var view  = inRange(runs, days);
+    var vGood = view.filter(isGood);
+    var when  = rangeText(days);
+    var pct   = (last && PLAN) ? last.downMbps / downPlan(last) * 100 : null;
+    var fails = view.filter(function (r) { return !r.ok; }).length;
+    var avg   = vGood.length ? vGood.reduce(function (a, r) { return a + r.downMbps; }, 0) / vGood.length : null;
+
+    var capParts = [];
+    if (PLAN && last) capParts.push(fmt(pct, 1) + '% of the ' + plain(downPlan(last)) + ' Mb/s plan');
+    if (PLAN) {
+      if (vGood.length) {
+        var nGreen = vGood.filter(function (r) { return gradeOf(r.downMbps, downPlan(r)) === 'green'; }).length;
+        var nRed   = vGood.filter(function (r) { return gradeOf(r.downMbps, downPlan(r)) === 'red'; }).length;
+        var span = days === 0 ? 'Overall' : 'In ' + when;
+        capParts.push(span + ': ' + nGreen + ' of ' + vGood.length + ' readings reached ' + BANDS[2] + '% of plan');
+        if (nRed) capParts.push(nRed + ' came in under ' + BANDS[0] + '%');
+      }
+    } else {
+      capParts.push('Enter your plan speed in the SpeedWatch panel to compare readings against it');
+    }
+    if (fails) capParts.push(fails + ' test' + (fails === 1 ? '' : 's') + ' failed to complete');
+
+    var html = '';
+    html +=
+      '<div class="card">' +
+        '<div class="card-head"><h2>Latest reading</h2><p>' +
+          (last ? esc(dlong(last.ts)) : 'no successful test yet') +
+        '</p></div>' +
+        '<div class="stats">' +
+          '<div class="stat"><span class="label">Download</span>' +
+            '<span class="value' + gcls(last && gradeOf(last.downMbps, downPlan(last))) + '">' + (last ? fmt(last.downMbps) : '—') + '</span>' +
+            '<span class="note">Mb/s' + (last ? ' &middot; ' + fmt(last.downMbps / 8) + ' MB/s' : '') + '</span></div>' +
+          '<div class="stat"><span class="label">Upload</span>' +
+            '<span class="value' + gcls(last && gradeOf(last.upMbps, upPlan(last))) + '">' + (last ? fmt(last.upMbps) : '—') + '</span>' +
+            '<span class="note">Mb/s' + (last ? ' &middot; ' + fmt(last.upMbps / 8) + ' MB/s' : '') + '</span></div>' +
+          '<div class="stat"><span class="label">Ping</span>' +
+            '<span class="value">' + (last ? fmt(last.pingMs, 0) : '—') + '</span>' +
+            '<span class="note">ms idle</span></div>' +
+          '<div class="stat"><span class="label">Average download</span>' +
+            '<span class="value' + gcls(gradeOf(avg, PLAN)) + '">' + fmt(avg) + '</span>' +
+            '<span class="note">Mb/s &middot; ' + vGood.length + ' test' + (vGood.length === 1 ? '' : 's') +
+              (days === 0 ? ', all time' : days === 1 ? ' today' : ' in ' + days + ' days') + '</span></div>' +
+        '</div>' +
+        '<div class="planbar">' +
+          (PLAN && last ? '<div class="track"><div class="fill" id="planfill"></div></div>' : '') +
+          '<p class="cap">' + capParts.join(' &middot; ') + '</p>' +
+        '</div>' +
+      '</div>';
+
+    html +=
+      '<div class="card" style="border-left:3px solid var(--accent)">' +
+        '<p style="font-size:13.5px;color:var(--ink-2);margin:0">' +
+          '<strong>About the unit.</strong> Internet plans and speed tests use ' +
+          '<strong>Mb/s</strong> (megabits per second). File downloads in a browser show ' +
+          '<strong>MB/s</strong> (megabytes per second). One byte is eight bits, so ' +
+          'divide by eight to convert: ' +
+          (last ? '<strong>' + fmt(last.downMbps) + ' Mb/s</strong> is <strong>' +
+                  fmt(last.downMbps / 8) + ' MB/s</strong>. ' : '') +
+          (PLAN ? 'A plan sold as &ldquo;' + plain(PLAN) + ' megas&rdquo; means ' + plain(PLAN) + ' Mb/s.'
+                : 'A plan sold as &ldquo;1000 megas&rdquo; means 1000 Mb/s.') +
+        '</p>' +
+      '</div>';
+
+    var hasFail = view.some(function (r) { return !r.ok; });
+    function bandLegend() {
+      return '<div class="legend">' +
+        ['red', 'yellow', 'white', 'green'].map(function (g) {
+          return '<span><i class="sq" style="background:var(--fill-' + g + ')"></i>' + bandRange(g) + '</span>';
+        }).join('') +
+        (hasFail ? '<span><span class="x">×</span>test failed</span>' : '') +
+        '</div>';
+    }
+    function failLegendOnly() {
+      return hasFail ? '<div class="legend"><span><span class="x">×</span>test failed</span></div>' : '';
+    }
+
+    if (!view.length) {
+      html +=
+        '<div class="card"><div class="empty"><strong>No readings in ' + esc(when) + '</strong>' +
+          (runs.length ? 'The most recent test was ' + esc(dlong(runs[runs.length - 1].ts)) +
+                         '. Pick a longer range above to see it.' : '') +
+        '</div></div>';
+    } else {
+      html +=
+        '<div class="card">' +
+          '<div class="card-head"><h2>Download</h2><p id="cDown-note"></p></div>' +
+          (PLAN ? bandLegend() +
+                  '<p class="hint">Bars are coloured by their share of your ' + plain(PLAN) +
+                  ' Mb/s plan. The lines mark where the colours change.</p>'
+                : '<p class="hint">Enter your plan speed in the SpeedWatch panel to colour these bars against it.</p>' + failLegendOnly()) +
+          '<div class="chartwrap" id="cDown"><div class="tip" id="tDown"></div></div>' +
+        '</div>';
+
+      html +=
+        '<div class="card">' +
+          '<div class="card-head"><h2>Upload</h2><p id="cUp-note"></p></div>' +
+          (PLAN_UP ? bandLegend() +
+                     '<p class="hint">Coloured by share of your ' + plain(PLAN_UP) + ' Mb/s upload plan.</p>'
+                   : '<p class="hint">Add your plan&rsquo;s upload speed in the SpeedWatch panel to colour these bars.</p>' + failLegendOnly()) +
+          '<div class="chartwrap" id="cUp"><div class="tip" id="tUp"></div></div>' +
+        '</div>';
+
+      html +=
+        '<div class="card">' +
+          '<div class="card-head"><h2>Latency</h2><p id="cLat-note"></p></div>' +
+          '<div class="legend">' +
+            '<span><i class="sq" style="background:var(--series-1)"></i>Idle</span>' +
+            '<span><i class="sq" style="background:var(--series-2)"></i>While downloading</span>' +
+            (hasFail ? '<span><span class="x">×</span>test failed</span>' : '') +
+          '</div>' +
+          '<div class="chartwrap" id="cLat"><div class="tip" id="tLat"></div></div>' +
+        '</div>';
+    }
+
+    if (last && last.image) {
+      html +=
+        '<div class="card">' +
+          '<div class="card-head"><h2>Speedtest result card</h2><p>' +
+            (last.resultUrl ? '<a href="' + esc(last.resultUrl) + '" target="_blank" rel="noopener">open on speedtest.net</a>' : '') +
+          '</p></div>' +
+          '<img class="shot" alt="Speedtest.net result for the latest test" src="../data/' + esc(last.image) + '">' +
+        '</div>';
+    }
+
+    var rows = view.slice().reverse().map(function (r) {
+      var link = r.resultUrl ? '<a href="' + esc(r.resultUrl) + '" target="_blank" rel="noopener">result</a>' : '—';
+      var img  = r.image ? ' &middot; <a href="../data/' + esc(r.image) + '" target="_blank" rel="noopener">image</a>' : '';
+      if (!r.ok) {
+        return '<tr><td class="num">' + esc(dlong(r.ts)) + '</td>' +
+               '<td colspan="6" style="color:var(--bad)">' + esc(r.error || 'test failed') + '</td>' +
+               '<td><span class="chip chip-bad">failed</span></td></tr>';
+      }
+      return '<tr>' +
+        '<td class="num">' + esc(dlong(r.ts)) + '</td>' +
+        '<td class="num' + gcls(gradeOf(r.downMbps, downPlan(r))) + '">' + fmt(r.downMbps) + '</td>' +
+        '<td class="num' + gcls(gradeOf(r.upMbps, upPlan(r))) + '">' + fmt(r.upMbps) + '</td>' +
+        '<td class="num">' + fmt(r.pingMs, 0) + '</td>' +
+        '<td class="num">' + fmt(r.jitterMs, 0) + '</td>' +
+        '<td>' + esc(r.server || '') + '</td>' +
+        '<td>' + (r.engine === 'cloudflare' ? '<span class="chip chip-warn">cloudflare</span>'
+                                            : '<span class="chip chip-ok">ookla</span>') + '</td>' +
+        '<td>' + link + img + '</td>' +
+      '</tr>';
+    }).join('');
+
+    var truncated = (DATA && DATA.total > runs.length)
+      ? '<p class="hint">This report holds the most recent ' + runs.length + ' of ' + DATA.total +
+        ' readings. All of them are kept in data\\history.ndjson.</p>' : '';
+
+    if (view.length) {
+      html +=
+        '<div class="card">' +
+          '<div class="card-head"><h2>Readings</h2><p>' + view.length + ' in ' + esc(when) +
+            (runs.length > view.length ? ' &middot; ' + (DATA && DATA.total ? DATA.total : runs.length) + ' recorded in total' : '') +
+          '</p></div>' + truncated +
+          '<div class="t-scroll"><table>' +
+            '<thead><tr><th>When</th><th>Down</th><th>Up</th><th>Ping</th><th>Jitter</th><th>Server</th><th>Source</th><th>Links</th></tr></thead>' +
+            '<tbody>' + rows + '</tbody>' +
+          '</table></div>' +
+        '</div>';
+    }
+
+    root.innerHTML = html;
+    RENDERERS = {};                                          // drop charts from the previous range
+
+    var fill = document.getElementById('planfill');
+    if (fill) {
+      fill.style.width = Math.max(0.4, Math.min(100, pct)) + '%';
+      fill.style.background = 'var(--fill-' + grade(pct) + ')';
+    }
+
+    if (view.length) {
+      drawBars('cDown', 'tDown', view, {
+        aria: 'Bar chart of download speed', noteUnit: 'Mb/s',
+        plan: PLAN, unit: 'Mb/s', decimals: 1,
+        series: [{ label: 'Download', get: function (r) { return r.downMbps; }, planFor: downPlan,
+                   fill: bandFill(downPlan, '--series-1'), band: function (r) { return gradeOf(r.downMbps, downPlan(r)); } }]
+      });
+      drawBars('cUp', 'tUp', view, {
+        aria: 'Bar chart of upload speed', noteUnit: 'Mb/s',
+        plan: PLAN_UP, unit: 'Mb/s', decimals: 1,
+        series: [{ label: 'Upload', get: function (r) { return r.upMbps; }, planFor: upPlan,
+                   fill: bandFill(upPlan, '--series-1'), band: function (r) { return gradeOf(r.upMbps, upPlan(r)); } }]
+      });
+      drawBars('cLat', 'tLat', view, {
+        aria: 'Bar chart of latency, idle and while downloading', noteUnit: 'Milliseconds', noteExtra: 'lower is better',
+        plan: null, unit: 'ms', decimals: 0,
+        series: [
+          { label: 'Idle',              get: function (r) { return r.pingMs; },       fill: function () { return 'var(--series-1)'; } },
+          { label: 'While downloading', get: function (r) { return r.loadedDownMs; }, fill: function () { return 'var(--series-2)'; } }
+        ]
+      });
+    }
+  }
+
+  // ------------------------------------------------------------- range controls
+  var rangeEl = document.getElementById('range');
+  rangeEl.innerHTML =
+    '<span class="lbl" id="rangeLbl">Show</span>' +
+    '<div class="seg" role="group" aria-labelledby="rangeLbl">' +
+      PRESETS.map(function (p) {
+        return '<button type="button" data-days="' + p + '">' + (p === 0 ? 'All' : p + ' days') + '</button>';
+      }).join('') +
+    '</div>' +
+    '<label class="custom" for="daysInput">or the last' +
+      '<input id="daysInput" type="number" min="1" max="3650" step="1" inputmode="numeric" placeholder="60" aria-label="Number of days">days</label>' +
+    '<span class="rnote" id="rangeNote" aria-live="polite"></span>';
+
+  var input  = document.getElementById('daysInput');
+  var rNote  = document.getElementById('rangeNote');
+
+  function syncControls() {
+    [].forEach.call(rangeEl.querySelectorAll('.seg button'), function (b) {
+      b.setAttribute('aria-pressed', String(Number(b.getAttribute('data-days')) === days));
+    });
+    if (document.activeElement !== input) input.value = PRESETS.indexOf(days) < 0 ? String(days) : '';
+    input.removeAttribute('aria-invalid');
+    rNote.textContent = '';
+  }
+
+  function setDays(d, fromHash) {
+    days = d;
+    try { localStorage.setItem(STORE_KEY, String(d)); } catch (e) { }
+    if (!fromHash) {
+      // replace, so each change does not add a Back-button step
+      try { location.replace('#days=' + (d === 0 ? 'all' : d)); } catch (e) { }
+    }
+    syncControls();
+    renderAll();
+  }
+
+  rangeEl.addEventListener('click', function (ev) {
+    var b = ev.target.closest ? ev.target.closest('button[data-days]') : null;
+    if (b) setDays(Number(b.getAttribute('data-days')));
+  });
+  function applyInput() {
+    var d = validDays(input.value);
+    if (input.value.trim() === '') { syncControls(); return; }
+    if (d === null || d === 0) {
+      input.setAttribute('aria-invalid', 'true');
+      rNote.textContent = 'Use a whole number of days, from 1 to 3650.';
+      return;
+    }
+    setDays(d);
+  }
+  input.addEventListener('change', applyInput);
+  input.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); applyInput(); } });
+  window.addEventListener('hashchange', function () {
+    var d = hashDays();
+    if (d !== null && d !== days) setDays(d, true);
+  });
+
+  // ------------------------------------------------------------- static parts
+  var ispName = '';
+  for (var k = good.length - 1; k >= 0; k--) { if (good[k].isp) { ispName = good[k].isp; break; } }
+  // The provider is not configured anywhere: it is the ISP the speed test itself
+  // reported for the newest reading, so it is labelled as detected rather than
+  // looking like part of the app's name.
+  var eyebrow = document.getElementById('eyebrow');
+  eyebrow.textContent =
+    'SpeedWatch' +
+    (ispName ? ' · Provider: ' + ispName + ' (detected by the speed test)' : '') +
+    (PLAN ? ' · Plan: ' + plain(PLAN) + (PLAN_UP ? ' / ' + plain(PLAN_UP) : '') + ' Mb/s' : ' · Plan: not set');
+
+  foot.textContent =
+    (TIMES.length ? 'Speed tests run at ' + TIMES.join(', ') + ' each day and are recorded on this computer. '
+                  : 'Speed tests are recorded on this computer. ') +
+    (DATA.generated ? 'Last updated ' + dlong(DATA.generated) + '. ' : '') +
+    (PLAN ? 'Colours compare each reading with the plan: ' + ['red', 'yellow', 'white', 'green'].map(function (g) {
+              return BAND_NAME[g] + ' ' + bandRange(g); }).join(', ') + '. ' : '') +
+    'Result cards are the ones speedtest.net shows under Results. Readings marked cloudflare were taken by the ' +
+    'fallback engine when Ookla was unreachable — same connection, different method.';
+
+  syncControls();
+  renderAll();
+
+})();
+</script>
+</body>
+</html>
